@@ -1,0 +1,74 @@
+# Sheaf
+
+> ˈshēvz,
+1. An agent toolkit.
+2. A quantity of a grain, bound together.
+
+
+## “Behaviors”
+Sheaf runs a _behavior_: a cobordant composed of an agent input, outputs, prompts and tools. Behaviors live under `~/.config/sheaf/behaviors/<name>`.
+
+## Overview
+- **CLI** (`sheaf`) scaffolds, lists, and runs behaviors.
+- **Behavior folder** holds three user files (`program.py`, `prompts.py`, `tools.py`), agnet internals (`/_lib`) plus some example support libs (`/utils`,).
+
+## Get started
+```bash
+uv run sheaf --help
+```
+
+## Create your first behavior
+```bash
+uv run sheaf init planner --key sk-your-openrouter-key
+uv run sheaf run planner
+```
+- `init` creates `~/.config/sheaf/behaviors/planner` with the starter files.
+- `run` launches the agent.
+
+## Construction
+
+```python
+# program.py
+from _lib.core import BaseLayer, StepEvent, embody
+
+@embody
+class Planner(BaseLayer):
+    async def percept(self):
+        while text := input("User > "):
+            if text.lower() == "/q":
+                print("Bye Bye Bye")
+                break
+            yield text
+
+    async def handler(self, event: StepEvent):
+        if event.type == "agent.finish.stopped" and self.assistant_reply:
+            print(f"Agent > {self.assistant_reply}")
+```
+
+```python
+# prompts.py
+SYSTEM_MESSAGE = """
+You help users plan their day. Keep answers short. Use tools when useful.
+"""
+```
+
+```python
+# tools.py
+from pathlib import Path
+from typing import Annotated
+
+def save_plan(
+    title: Annotated[str, "Short name for this plan"],
+    body: Annotated[str, "What to remember"],
+) -> str:
+    folder = Path("plans")
+    folder.mkdir(exist_ok=True)
+    file = folder / f"{title.replace(' ', '_').lower()}.txt"
+    file.write_text(body, encoding="utf-8")
+    return f"Saved to {file}"
+```
+
+## Config
+- `OPENROUTER_API_KEY` — required API key (set through `--key`, `.env`, or your shell).
+- `SHEAF_MODEL` — optional model override (`openai/gpt-4.1-mini` default).
+- `SHEAF_BASE_URL` — optional endpoint override (`https://openrouter.ai/api/v1` default).

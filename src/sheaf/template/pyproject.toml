@@ -1,0 +1,13 @@
+[project]
+name = "sheaf-behavior"
+version = "0.1.0"
+description = "A sheaf behavior"
+requires-python = ">=3.14"
+dependencies = [
+    "openai==1.109.1",
+    "pydantic==2.12.2",
+]
+
+[tool.pyright]
+include = ["."]
+typeCheckingMode = "standard"

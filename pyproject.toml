@@ -1,0 +1,20 @@
+[project]
+name = "sheaf"
+version = "0.0.1"
+description = "Observes, makes decisions and takes actions to achieve goals."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "openai==1.109.1",
+    "pydantic==2.12.3",
+]
+
+[project.scripts]
+sheaf = "sheaf.__main__:main"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
