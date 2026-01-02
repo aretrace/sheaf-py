@@ -1,171 +1,27 @@
 import asyncio
-import json
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import (
     Any,
     AsyncContextManager,
     Callable,
     Literal,
-    TypedDict,
     TypeVar,
     cast,
     final,
 )
 
 from openai import AsyncOpenAI
-from openai.types.chat import (
-    ChatCompletionMessageFunctionToolCall,
-    ChatCompletionMessageParam,
-    ChatCompletionMessageToolCallUnion,
-    ChatCompletionToolMessageParam,
-    ChatCompletionUserMessageParam,
-)
+from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, Field
 
-from .misc import pseudlid
-from .suspend import Fallback
-from .suspend import suspend as _suspend_util
-from .toolgen import callables_to_tool_schemas
-
-
-class CalledTool(TypedDict):
-    """Metadata and results from a tool execution."""
-
-    name: str
-    arguments: str
-    results: ChatCompletionToolMessageParam
-
-
-class ToolExecutor:
-    """Handles tool execution with parallel processing."""
-
-    def __init__(self, tool_registry: dict[str, Callable[..., Any]]):
-        self._tool_registry = tool_registry
-
-    @classmethod
-    def from_callables(cls, callables: list[Callable[..., Any]]) -> "ToolExecutor":
-        """Convenience constructor from a list of functions."""
-        registry = {fn.__name__: fn for fn in callables}
-        return cls(registry)
-
-    def call_tools(
-        self, tool_calls: list[ChatCompletionMessageToolCallUnion]
-    ) -> list[CalledTool]:
-        """Execute multiple tool calls in parallel and maintain original order.
-
-        Args:
-            tool_calls: The list of tool calls from the assistant message
-
-        Returns:
-            List of CalledTool dicts with name, arguments, and results
-        """
-        with ThreadPoolExecutor() as pool:
-            # Submit all tool calls for parallel execution
-            tool_call_futures_dict: dict[
-                Future[ChatCompletionToolMessageParam],
-                tuple[int, str, str],
-            ] = {
-                pool.submit(self._execute_tool, tool): (
-                    tool_index,
-                    tool_name := getattr(
-                        getattr(tool, "function", None), "name", "unknown"
-                    ),
-                    tool_arguments := getattr(
-                        getattr(tool, "function", None), "arguments", "{}"
-                    )
-                    or "{}",
-                )
-                for tool_index, tool in enumerate(tool_calls)
-            }
-
-            # Prepare results list to maintain original order
-            original_tool_call_order_results = cast(
-                list[CalledTool], [None] * len(tool_calls)
-            )
-
-            # Collect results as they complete
-            for completed_tool_call_future in as_completed(tool_call_futures_dict):
-                original_tool_order_index, tool_name, tool_arguments = (
-                    tool_call_futures_dict[completed_tool_call_future]
-                )
-                tool_message_response = completed_tool_call_future.result()
-                original_tool_call_order_results[original_tool_order_index] = {
-                    "name": tool_name,
-                    "arguments": tool_arguments,
-                    "results": tool_message_response,
-                }
-
-            return original_tool_call_order_results
-
-    def _execute_tool(
-        self,
-        tool: ChatCompletionMessageToolCallUnion,
-    ) -> ChatCompletionToolMessageParam:
-        """Execute a single tool call and return a tool message.
-
-        Args:
-            tool: The tool call from the assistant
-
-        Returns:
-            ChatCompletionToolMessageParam with the tool result
-        """
-        tool_id = tool.id
-        # Validate tool type
-        if getattr(tool, "type", None) != "function":
-            print(f"Unsupported tool call: {tool_id}")
-            return {
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": f"Error: {tool_id} is an unsupported tool call type, expected `function`.",
-            }
-
-        tool = cast(ChatCompletionMessageFunctionToolCall, tool)
-        tool_name = tool.function.name
-        tool_arguments = tool.function.arguments or "{}"
-
-        # Parse arguments
-        try:
-            tool_arguments_dict = json.loads(tool_arguments) if tool_arguments else {}
-        except Exception as e:
-            print(f"Failed to parse tool arguments for {tool_name}: {e}")
-            return {
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": "Error: Failed to parse tool arguments.",
-            }
-
-        # Look up tool function
-        tool_function = self._tool_registry.get(tool_name)
-        if tool_function is None:
-            print(f"Error: tool {tool_name} not available.")
-            return {
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": f"Error: tool `{tool_name}` not available.",
-            }
-
-        # Execute tool
-        try:
-            tool_result = tool_function(**tool_arguments_dict)
-            tool_result_str = (
-                tool_result if isinstance(tool_result, str) else json.dumps(tool_result)
-            )
-        except Exception as e:
-            print(f"Tool {tool_name} raised: {e}")
-            return {
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": str(e),
-            }
-
-        return {
-            "role": "tool",
-            "tool_call_id": tool_id,
-            "content": tool_result_str,
-        }
+from ..misc import pseudlid
+from ..suspend import Fallback
+from ..suspend import suspend as _suspend_util
+from ..toolgen import callables_to_tool_schemas
+from .layer_wiring import Afference, LayerWiring, PerceptMsg, _empty_afference
+from .tool_executor import CalledTool, ToolExecution
 
 
 class StepEvent(BaseModel):
@@ -182,14 +38,13 @@ class StepEvent(BaseModel):
         "agent.messages.updated",
     ]
     timestamp: float = Field(default_factory=time.time)
-    error: str | None = None
 
 
 class StepError(BaseModel):
     message: str
 
 
-class BaseLayer(ABC):
+class BaseLayer(LayerWiring, ToolExecution, ABC):
     """
     Situated perception–action cycle subsumption.
 
@@ -237,27 +92,28 @@ class BaseLayer(ABC):
 
         # Step
         self.called_tools: list[CalledTool] = []
-        self._tool_executor = ToolExecutor.from_callables(callable_tools)
+        self._init_tools(callable_tools)
         self.assistant_reply: str | None = None
         # TODO: fix implicit usage,
         # - API errors → break (stop agent)
         # - Tool errors → continue (resilient)
         # Value is set, but not included in events,
-        # handler() can't see what / why somthing failed.
+        # handler() can't see what / why something failed.
         self.error: StepError | None = None
 
         # Event
         self._event_transition_boundary: AsyncContextManager[Any] | None = None
 
     @abstractmethod
-    async def percept(self) -> AsyncIterator[str | ChatCompletionUserMessageParam]:
+    async def percept(self, afference: Afference) -> AsyncIterator[PerceptMsg]:
         """
         Async generator that yields input messages.
 
-        ONLY embodied leaf subclasses should implement this method.
+        Leaf subclasses ignore afference and yield source messages.
+        Middleware subclasses consume afference and yield transformed messages.
         """
-        if False:
-            yield
+        async for msg in afference:
+            yield msg
 
     @abstractmethod
     async def handler(self, event: StepEvent) -> None:
@@ -268,23 +124,6 @@ class BaseLayer(ABC):
             event: Event object with type attribute
         """
         pass
-
-    # Automatic middleware chaining for `handler()`.
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-
-        if "handler" in cls.__dict__:
-            original = cls.__dict__["handler"]
-
-            async def wrapped(self, event):
-                for base in cls.__mro__[1:]:
-                    method = base.__dict__.get("handler")
-                    if method and not getattr(method, "__isabstractmethod__", False):
-                        await method(self, event)
-                        break
-                await original(self, event)
-
-            cls.handler = wrapped
 
     # Spawn concurrent execution spool
     @final
@@ -312,7 +151,7 @@ class BaseLayer(ABC):
     @final
     async def _dispatch(self) -> None:
         """Core autonomous agentic loop logic."""
-        max_turns = float("inf")  # 🦾⚜️🌈🪐🛠
+        max_turns = float("inf")  # 🦾 ⚜️ 🌈 🪐 🛠
         turns = 0
         # Control loop.
         while True:
@@ -355,7 +194,7 @@ class BaseLayer(ABC):
                 await self._emit(StepEvent(type="agent.tools.executing"))  # 📡
                 try:
                     self.called_tools = await asyncio.to_thread(
-                        self._tool_executor.call_tools, tool_calls
+                        self.call_tools, tool_calls
                     )
                     tool_results = [
                         called_tool["results"] for called_tool in self.called_tools
@@ -414,7 +253,7 @@ class BaseLayer(ABC):
         Process message(s) and run the agentic loop.
         """
         if message is None:
-            async for msg in self.percept():
+            async for msg in self.percept(_empty_afference()):
                 await self.turn(msg)
             return
 
@@ -441,7 +280,7 @@ class BaseLayer(ABC):
 T = TypeVar("T", bound=BaseLayer)
 
 
-def embody(cls: type[T]) -> type[T]:
-    """Marks a layer to be embodied (metadata annotation)."""
-    setattr(cls, "__embody__", True)
+def situate(cls: type[T]) -> type[T]:
+    """Marks a layer to be situated (metadata annotation)."""
+    setattr(cls, "__situate__", True)
     return cls

@@ -36,8 +36,8 @@ def has_required_files(path: Path) -> bool:
     return all((path / f).exists() for f in REQUIRED_FILES)
 
 
-def copy_template_files(dest: Path) -> None:
-    """Copy template files to destination, skipping existing ones."""
+def copy_template_files(dest: Path, *, overwrite: bool = False) -> None:
+    """Copy template files to destination, optionally overwriting existing files."""
     if not TEMPLATE_DIR.exists():
         raise FileNotFoundError(f"Template directory not found: {TEMPLATE_DIR}")
 
@@ -54,11 +54,14 @@ def copy_template_files(dest: Path) -> None:
             dest_file.mkdir(parents=True, exist_ok=True)
             continue
 
-        if dest_file.exists():
+        if dest_file.exists() and not overwrite:
             print(f"  [skip] {rel_path}")
             continue
 
         dest_file.parent.mkdir(parents=True, exist_ok=True)
+        if dest_file.exists() and dest_file.is_dir():
+            print(f"  [skip] {rel_path} (destination is a directory)")
+            continue
         shutil.copy2(src_file, dest_file)
         print(f"  [copy] {rel_path}")
 
@@ -103,7 +106,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"Initializing '{name}' at {behavior_dir}")
 
     print("\nCopying template files...")
-    copy_template_files(behavior_dir)
+    copy_template_files(behavior_dir, overwrite=args.force)
 
     if args.key:
         env_path = behavior_dir / ".env"

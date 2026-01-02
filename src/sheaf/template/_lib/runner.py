@@ -45,23 +45,23 @@ def get_module_functions(module: ModuleType) -> list[Callable[..., Any]]:
     return functions
 
 
-def find_embody_class(module: ModuleType) -> type:
-    """Find the class marked with @embody decorator."""
-    embody_classes = []
+def find_situate_class(module: ModuleType) -> type:
+    """Find the class marked with @situate decorator."""
+    situate_classes = []
 
     for name, obj in inspect.getmembers(module, inspect.isclass):
-        if not getattr(obj, "__embody__", False):
+        if not getattr(obj, "__situate__", False):
             continue
-        embody_classes.append(obj)
+        situate_classes.append(obj)
 
-    if not embody_classes:
-        raise ValueError("No class marked with @embody found")
+    if not situate_classes:
+        raise ValueError("No class marked with @situate found")
 
-    if len(embody_classes) > 1:
-        names = [cls.__name__ for cls in embody_classes]
-        raise ValueError(f"Multiple @embody classes found: {', '.join(names)}")
+    if len(situate_classes) > 1:
+        names = [cls.__name__ for cls in situate_classes]
+        raise ValueError(f"Multiple @situate classes found: {', '.join(names)}")
 
-    return embody_classes[0]
+    return situate_classes[0]
 
 
 def load_behavior(directory: Path) -> tuple[type, list[Callable], str]:
@@ -80,7 +80,7 @@ def load_behavior(directory: Path) -> tuple[type, list[Callable], str]:
         raise FileNotFoundError(f"Missing: {program_path}")
 
     program = load_python_module(program_path, f"_sheaf_program_{directory.name}")
-    agent_class = find_embody_class(program)
+    agent_class = find_situate_class(program)
 
     # tools.py
     tools_path = directory / "tools.py"

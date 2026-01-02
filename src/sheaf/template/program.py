@@ -1,4 +1,4 @@
-from _lib.core import BaseLayer, StepEvent, embody
+from _lib.core import BaseLayer, StepEvent, situate
 from utils.logger import logger
 from utils.stdblock import stdblock
 from utils.tidgets import (
@@ -36,11 +36,21 @@ class LoggingLayer(BaseLayer):
                 logger.info(f"Unmatched event: '{e}'")
 
 
-@embody
-class VTLayer(LoggingLayer):
+class ContextLayer(LoggingLayer):
+    """Middleware that injects working directory context into messages."""
+
+    async def percept(self, afference):
+        from pathlib import Path
+
+        async for msg in afference:
+            yield f"{msg}\n\n[CWD: {Path.cwd()}]"
+
+
+@situate
+class VTLayer(ContextLayer):
     """Agent with console interactivity."""
 
-    async def percept(self):
+    async def percept(self, afference):
         while True:
             user_input = stdblock(f"{RoleLabel.User} ").strip()
 

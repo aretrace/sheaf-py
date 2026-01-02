@@ -25,15 +25,33 @@ uv run sheaf run planner
 - `init` creates `~/.config/sheaf/behaviors/planner` with the starter files.
 - `run` launches the agent.
 
-## Construction
+## Swathe
 
 ```python
 # program.py
-from _lib.core import BaseLayer, StepEvent, embody
+from datetime import datetime
+from _lib.core import BaseLayer, StepEvent, situate
 
-@embody
-class Planner(BaseLayer):
-    async def percept(self):
+
+class LoggingLayer(BaseLayer):
+    """Adapter that logs errors."""
+
+    async def handler(self, event: StepEvent):
+        if self.error:
+            print(f"[ERR] {self.error.message}")
+
+
+class TimestampLayer(LoggingLayer):
+    """Adapter that timestamps messages as they flow up."""
+
+    async def percept(self, afference: Afference):
+        async for msg in afference:
+            yield f"[{datetime.now():%H:%M}] {msg}"
+
+
+@situate
+class Planner(TimestampLayer):
+    async def percept(self, afference: Afference):
         while text := input("User > "):
             if text.lower() == "/q":
                 print("Bye Bye Bye")
@@ -44,6 +62,7 @@ class Planner(BaseLayer):
         if event.type == "agent.finish.stopped" and self.assistant_reply:
             print(f"Agent > {self.assistant_reply}")
 ```
+`percept()` flows from the situated leaf up through base layers, while `handler()` flows from base layers down to the situated leaf.
 
 ```python
 # prompts.py
